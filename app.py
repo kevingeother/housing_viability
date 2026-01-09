@@ -17,12 +17,12 @@ st.divider()
 st.header("Purchase & Property")
 col1, col2, col3 = st.columns(3)
 with col1:
-  kaufpreis = st.number_input("[A] Purchase price (€)", value=389000, step=5000)
-  stellplatz = st.number_input("[B] Parking garage price (€)", value=39900, step=1000)
+  kaufpreis = st.number_input("[A] Purchase price (€)", value=343200, step=5000)
+  stellplatz = st.number_input("[B] Parking garage price (€)", value=30000, step=1000)
 with col2:
-  area = st.number_input("[C] Living area (sqm)", value=41.39)
+  area = st.number_input("[C] Living area (sqm)", value=36)
 with col3:
-  land_ratio = st.slider("[D] Property to land value ratio", 0.0, 1.0, 0.81, 0.01)
+  land_ratio = st.slider("[D] Property to land value ratio", 0.0, 1.0, 0.84, 0.01)
 
 # Summary outputs
 total_purchase_price = kaufpreis + stellplatz
@@ -41,7 +41,7 @@ with col1:
   with col4:
     real_estate_transfer_tax = st.number_input("Real estate tax (%)", value=3.5) / 100 * total_purchase_price
     notary = st.number_input("Notary (%)", value=1.5) / 100 * total_purchase_price
-    land_charge_registration_fees = st.number_input("Land charge fees (%)", value=0.5) / 100 * total_purchase_price
+    land_charge_registration_fees = st.number_input("Land charge fees (%)", value=0) / 100 * total_purchase_price
     total_nbk = real_estate_transfer_tax + notary + land_charge_registration_fees
   with col5:
     st.metric("", f"€ {real_estate_transfer_tax:,.2f}")
@@ -73,9 +73,9 @@ col1, col2, col3 = st.columns(3)
 with col1:
   col4, col5 = st.columns(2)
   with col4:
-    rent_per_sqm = st.number_input("Rent per sqm (€)", value=28.0, step=0.5)
+    rent_per_sqm = st.number_input("Rent per sqm (€)", value=25.0, step=0.5)
     rent_property = rent_per_sqm * area
-    rent_parking = st.number_input("Parking rent (€)", value=100, step=10)
+    rent_parking = st.number_input("Parking rent (€)", value=50, step=10)
     rent_total = rent_per_sqm * area + rent_parking
   with col5:
     st.metric("Monthly Rent", f"€ {rent_property:,.2f}")
@@ -108,7 +108,7 @@ st.divider()
 st.header("Maintenance")
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-  maintenance_base = st.number_input("Maintenance (monthly €)", value=5)
+  maintenance_base = st.number_input("Maintenance (monthly €)", value=30)
 with col2:
   wg_management_fee = st.number_input("WG management fee (monthly €)", value=30)
 with col3:
@@ -126,7 +126,7 @@ with col1:
 with col2:
   sonder_afa_years = st.number_input("Sonder-AfA years", value=4)
 with col3:
-  sonder_afa_base_amount = st.number_input("Sonder-AfA base amount (€)", value=100000, step=1000)
+  sonder_afa_base_amount = st.number_input("Sonder-AfA base amount (€)", value=286000, step=1000)
 with col1:
   degressive_afa_rate = st.number_input("Degressive AfA rate (%)", value=5.0) / 100
 with col2:
@@ -141,10 +141,10 @@ st.header("Financing")
 st.subheader("KfW Loan")
 col1, _, _ = st.columns(3)
 with col1:
-  kfw_loan_amount = st.number_input("KfW loan amount (€)", value=100000, step=1000)
+  kfw_loan_amount = st.number_input("KfW loan amount (€)", value=150000, step=1000)
 col1, col2, col3 = st.columns(3)
 with col1:
-  kfw_interest_rate = st.number_input("KfW interest (%)", value=2.19) / 100
+  kfw_interest_rate = st.number_input("KfW interest (%)", value=2.3) / 100
   kfw_tilgung_rate = st.number_input("KfW Tilgung (%)", value=2.0) / 100
 with col2:
   kfw_interest = kfw_loan_amount * kfw_interest_rate
@@ -163,7 +163,7 @@ with col1:
 col1, col2, col3 = st.columns(3)
 with col1:
   main_loan_rate = st.number_input("Main loan interest (%)", value=4.0) / 100
-  main_loan_tilgung_rate = st.number_input("Main loan Tilgung (%)", value=1.5) / 100
+  main_loan_tilgung_rate = st.number_input("Main loan Tilgung (%)", value=2.0) / 100
 with col2:
   main_loan_interest = main_loan_amount * main_loan_rate
   main_loan_tilgung = main_loan_amount * main_loan_tilgung_rate
@@ -196,9 +196,9 @@ st.divider()
 st.header("Timeline")
 col1, col2, col3 = st.columns(3)
 with col1:
-  contract_date = st.date_input("Contract date", value=date(2025, 9, 1))
+  contract_date = st.date_input("Contract date", value=date(2026, 2, 15))
 with col2:
-  end_construction = st.date_input("Construction end date", value=date(2027, 12, 31))
+  end_construction = st.date_input("Construction end date", value=date(2026, 12, 31))
 with col3:
   output_years = st.number_input("Output horizon (years)", value=30)
 
@@ -320,6 +320,7 @@ for m in range(total_months):
   draw = 0.0
   if date_m == start_month:
     draw += total_nbk
+    draw += furnishing_costs
   for share, offset in payment_schedule:
     if date_m == start_month + pd.DateOffset(months=offset):
       draw += total_purchase_price * share
