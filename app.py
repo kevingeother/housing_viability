@@ -5,8 +5,234 @@ from datetime import date
 from dateutil.relativedelta import relativedelta
 import numpy as np
 import numpy_financial as npf
+import json
+from google.oauth2.service_account import Credentials
+import gspread
 
 st.set_page_config(page_title="Investment Property Calculator", layout="wide")
+
+# =========================
+# GOOGLE SHEETS SETUP
+# =========================
+def init_gsheet():
+    """Initialize Google Sheets connection"""
+    try:
+        # Check if credentials exist
+        if "gcp_service_account" not in st.secrets:
+            return None
+            
+        # Load credentials from Streamlit secrets
+        credentials_dict = st.secrets["gcp_service_account"]
+        credentials = Credentials.from_service_account_info(
+            credentials_dict,
+            scopes=[
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive"
+            ]
+        )
+        client = gspread.authorize(credentials)
+        
+        # Open or create the spreadsheet
+        sheet_name = "Housing Viability Data"
+        try:
+            spreadsheet = client.open(sheet_name)
+        except gspread.SpreadsheetNotFound:
+            spreadsheet = client.create(sheet_name)
+            # Share with your email (optional - set in secrets)
+            if "user_email" in st.secrets:
+                spreadsheet.share(st.secrets["user_email"], perm_type='user', role='writer')
+        
+        # Get or create the worksheet
+        try:
+            worksheet = spreadsheet.worksheet("Apartments")
+        except gspread.WorksheetNotFound:
+            worksheet = spreadsheet.add_worksheet(title="Apartments", rows=100, cols=50)
+            # Add header row
+            headers = [
+                "apartment_name", "saved_date", "kaufpreis", "stellplatz", "area", "land_ratio",
+                "real_estate_tax_pct", "notary_pct", "land_charge_fees_pct", "equity_pct",
+                "rent_per_sqm", "rent_parking", "rent_growth_rate", "furnishing_costs",
+                "furnishing_depreciation_rate", "furnishing_depreciation_years",
+                "maintenance_base", "wg_management_fee", "unit_management_fee", "maintenance_growth",
+                "sonder_afa_rate", "sonder_afa_years", "sonder_afa_base_amount",
+                "degressive_afa_rate", "degressive_years", "linear_years",
+                "kfw_loan_amount", "kfw_interest_rate", "kfw_tilgung_rate",
+                "main_loan_rate", "main_loan_tilgung_rate",
+                "bereitstellungszins", "grace_period_months", "tax_rate",
+                "contract_date", "end_construction", "output_years",
+                "num_payments", "payment_schedule", "sale_growth"
+            ]
+            worksheet.append_row(headers)
+        
+        return worksheet
+    except Exception:
+        # Never expose error details to public users
+        return None
+
+def save_apartment_to_sheets(worksheet, apartment_name, data):
+    """Save apartment configuration to Google Sheets"""
+    try:
+        # Validate apartment name (prevent injection)
+        if not apartment_name or len(apartment_name) > 100:
+            return False
+        if not apartment_name.replace(" ", "").replace("-", "").replace("_", "").isalnum():
+            return False
+            
+        # Check total count (prevent spam)
+        try:
+            all_records = worksheet.get_all_records()
+            if len(all_records) >= 50:  # Hard limit
+                return False
+        except:
+            pass
+        
+        # Add timestamp
+        data["saved_date"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+        data["apartment_name"] = apartment_name
+        
+        # Convert data to row format matching headers
+        row = [
+            data["apartment_name"], data["saved_date"],
+            data["kaufpreis"], data["stellplatz"], data["area"], data["land_ratio"],
+            data["real_estate_tax_pct"], data["notary_pct"], data["land_charge_fees_pct"], data["equity_pct"],
+            data["rent_per_sqm"], data["rent_parking"], data["rent_growth_rate"], data["furnishing_costs"],
+            data["furnishing_depreciation_rate"], data["furnishing_depreciation_years"],
+            data["maintenance_base"], data["wg_management_fee"], data["unit_management_fee"], data["maintenance_growth"],
+            data["sonder_afa_rate"], data["sonder_afa_years"], data["sonder_afa_base_amount"],
+            data["degressive_afa_rate"], data["degressive_years"], data["linear_years"],
+            data["kfw_loan_amount"], data["kfw_interest_rate"], data["kfw_tilgung_rate"],
+            data["main_loan_rate"], data["main_loan_tilgung_rate"],
+            data["bereitstellungszins"], data["grace_period_months"], data["tax_rate"],
+            data["contract_date"], data["end_construction"], data["output_years"],
+            data["num_payments"], json.dumps(data["payment_schedule"]), data["sale_growth"]
+        ]
+        
+        worksheet.append_row(row)
+        return True
+    except Exception:
+        return False
+
+def load_apartments_from_sheets(worksheet):
+    """Load all saved apartments from Google Sheets"""
+    try:
+        records = worksheet.get_all_records()
+        return records
+    except Exception:
+        return []
+
+def delete_apartment_from_sheets(worksheet, apartment_name):
+    """Delete an apartment from Google Sheets"""
+    try:
+        cell = worksheet.find(apartment_name)
+        if cell:
+            worksheet.delete_rows(cell.row)
+            return True
+        return False
+    except Exception:
+        return False
+
+# =========================
+# SIDEBAR - SAVE/LOAD
+# =========================
+# Rate limiting check
+if 'last_save_time' not in st.session_state:
+    st.session_state['last_save_time'] = 0
+if 'last_delete_time' not in st.session_state:
+    st.session_state['last_delete_time'] = 0
+
+with st.sidebar:
+    st.header("💾 Save/Load Apartments")
+    
+    # Simple authentication for save/load features
+    storage_enabled = False
+    if "storage_password" in st.secrets:
+        if 'authenticated' not in st.session_state:
+            st.session_state['authenticated'] = False
+        
+        if not st.session_state['authenticated']:
+            with st.form("auth_form"):
+                st.caption("🔒 Enter password to save/load data")
+                password = st.text_input("Password", type="password")
+                submitted = st.form_submit_button("Unlock")
+                if submitted:
+                    if password == st.secrets["storage_password"]:
+                        st.session_state['authenticated'] = True
+                        st.rerun()
+                    else:
+                        st.error("Invalid password")
+        else:
+            storage_enabled = True
+            if st.button("🔓 Lock", use_container_width=True):
+                st.session_state['authenticated'] = False
+                st.rerun()
+    else:
+        # No password configured, allow access if sheets are configured
+        storage_enabled = True
+    
+    # Initialize Google Sheets only if authenticated
+    worksheet = init_gsheet() if storage_enabled else None
+    
+    if worksheet:
+        # Load saved apartments
+        saved_apartments = load_apartments_from_sheets(worksheet)
+        
+        # Save current configuration
+        st.subheader("Save Current")
+        apartment_name = st.text_input("Apartment name", placeholder="e.g., Berlin Mitte 2BR", max_chars=50)
+        if apartment_name and not apartment_name.replace(" ", "").replace("-", "").replace("_", "").isalnum():
+            st.caption("⚠️ Use only letters, numbers, spaces, hyphens, and underscores")
+        col_save, col_new = st.columns(2)
+        with col_save:
+            if st.button("💾 Save", type="primary", disabled=not apartment_name, use_container_width=True):
+                # Rate limiting: max 1 save per 2 seconds
+                import time
+                current_time = time.time()
+                if current_time - st.session_state.get('last_save_time', 0) < 2:
+                    st.warning("Please wait before saving again")
+                else:
+                    st.session_state['last_save_time'] = current_time
+                    st.session_state['pending_save'] = apartment_name
+                    st.rerun()
+        with col_new:
+            if st.button("🆕 New", use_container_width=True):
+                if 'loaded_data' in st.session_state:
+                    del st.session_state['loaded_data']
+                st.rerun()
+        
+        st.divider()
+        
+        # Load existing apartments
+        st.subheader("Load Saved")
+        if saved_apartments:
+            apartment_names = [apt["apartment_name"] for apt in saved_apartments]
+            selected_apartment = st.selectbox("Select apartment", [""] + apartment_names)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("📂 Load", disabled=not selected_apartment):
+                    st.session_state['load_apartment'] = selected_apartment
+                    st.rerun()
+            with col2:
+                if st.button("🗑️ Delete", disabled=not selected_apartment):
+                    # Rate limiting: max 1 delete per 2 seconds
+                    import time
+                    current_time = time.time()
+                    if current_time - st.session_state.get('last_delete_time', 0) < 2:
+                        st.warning("Please wait before deleting again")
+                    else:
+                        st.session_state['last_delete_time'] = current_time
+                        if delete_apartment_from_sheets(worksheet, selected_apartment):
+                            st.success(f"Deleted '{selected_apartment}'")
+                            st.rerun()
+                        else:
+                            st.error("Delete failed")
+            
+            st.caption(f"{len(saved_apartments)} apartment(s) saved")
+        else:
+            st.info("No saved apartments yet")
+    else:
+        st.info("💡 Storage not configured")
+        st.caption("Contact the app owner to enable save/load features.")
 
 st.title("Investment Property Viability Calculator")
 st.divider()
@@ -14,15 +240,18 @@ st.divider()
 # =========================
 # INPUTS
 # =========================
+# Check if we have loaded data
+loaded = st.session_state.get('loaded_data', {})
+
 st.header("Purchase & Property")
 col1, col2, col3 = st.columns(3)
 with col1:
-  kaufpreis = st.number_input("[A] Purchase price (€)", value=343200, step=5000)
-  stellplatz = st.number_input("[B] Parking garage price (€)", value=30000, step=1000)
+  kaufpreis = st.number_input("[A] Purchase price (€)", value=int(loaded.get("kaufpreis", 343200)), step=5000)
+  stellplatz = st.number_input("[B] Parking garage price (€)", value=int(loaded.get("stellplatz", 30000)), step=1000)
 with col2:
-  area = st.number_input("[C] Living area (sqm)", value=36)
+  area = st.number_input("[C] Living area (sqm)", value=float(loaded.get("area", 36)))
 with col3:
-  land_ratio = st.slider("[D] Property to land value ratio", 0.0, 1.0, 0.84, 0.01)
+  land_ratio = st.slider("[D] Property to land value ratio", 0.0, 1.0, float(loaded.get("land_ratio", 0.84)), 0.01)
 
 # Summary outputs
 total_purchase_price = kaufpreis + stellplatz
@@ -39,9 +268,9 @@ col1, col2, col3 = st.columns(3)
 with col1:
   col4, col5 = st.columns(2)
   with col4:
-    real_estate_transfer_tax = st.number_input("Real estate tax (%)", value=3.5) / 100 * total_purchase_price
-    notary = st.number_input("Notary (%)", value=1.5) / 100 * total_purchase_price
-    land_charge_registration_fees = st.number_input("Land charge fees (%)", value=0) / 100 * total_purchase_price
+    real_estate_transfer_tax = st.number_input("Real estate tax (%)", value=float(loaded.get("real_estate_tax_pct", 3.5))) / 100 * total_purchase_price
+    notary = st.number_input("Notary (%)", value=float(loaded.get("notary_pct", 1.5))) / 100 * total_purchase_price
+    land_charge_registration_fees = st.number_input("Land charge fees (%)", value=float(loaded.get("land_charge_fees_pct", 0))) / 100 * total_purchase_price
     total_nbk = real_estate_transfer_tax + notary + land_charge_registration_fees
   with col5:
     st.metric("", f"€ {real_estate_transfer_tax:,.2f}")
@@ -62,7 +291,7 @@ col1, col2 = st.columns(2)
 with col1:
   col3, col4 = st.columns(2)
   with col3:
-    eigenkapital = st.number_input("Equity (%)", value=10.0) / 100 * total_investment
+    eigenkapital = st.number_input("Equity (%)", value=float(loaded.get("equity_pct", 10.0))) / 100 * total_investment
   with col4:
     st.metric("", f"€ {eigenkapital:,.2f}")
 st.divider()
@@ -73,9 +302,9 @@ col1, col2, col3 = st.columns(3)
 with col1:
   col4, col5 = st.columns(2)
   with col4:
-    rent_per_sqm = st.number_input("Rent per sqm (€)", value=25.0, step=0.5)
+    rent_per_sqm = st.number_input("Rent per sqm (€)", value=float(loaded.get("rent_per_sqm", 25.0)), step=0.5)
     rent_property = rent_per_sqm * area
-    rent_parking = st.number_input("Parking rent (€)", value=50, step=10)
+    rent_parking = st.number_input("Parking rent (€)", value=int(loaded.get("rent_parking", 50)), step=10)
     rent_total = rent_per_sqm * area + rent_parking
   with col5:
     st.metric("Monthly Rent", f"€ {rent_property:,.2f}")
@@ -86,17 +315,17 @@ with col2:
     st.metric("", f"€ {rent_parking * 12:,.2f}")
     st.metric("Total", f"€ {rent_total * 12:,.2f}")
 with col1:
-    rent_growth_rate = st.number_input("Annual rent growth (%)", value=2.0) / 100
+    rent_growth_rate = st.number_input("Annual rent growth (%)", value=float(loaded.get("rent_growth_rate", 2.0))) / 100
 st.divider()
 
 st.header("Furnishing")
 col1, col2, col3 = st.columns(3)
 with col1:
-  furnishing_costs = st.number_input("Furnishing costs (€)", value=5000)
+  furnishing_costs = st.number_input("Furnishing costs (€)", value=int(loaded.get("furnishing_costs", 5000)))
 with col2:
-  furnishing_annual_depreciation_rate = st.number_input("Furnishing depreciation rate (%)", value=10.0) / 100
+  furnishing_annual_depreciation_rate = st.number_input("Furnishing depreciation rate (%)", value=float(loaded.get("furnishing_depreciation_rate", 10.0))) / 100
 with col3:
-  furnishing_depreciation_years = st.number_input("Furnishing depreciation years", value=10)
+  furnishing_depreciation_years = st.number_input("Furnishing depreciation years", value=int(loaded.get("furnishing_depreciation_years", 10)))
   # Validate furnishing depreciation: rate * years should equal 100%
 if abs(furnishing_annual_depreciation_rate * furnishing_depreciation_years - 1.0) > 1e-6:
   total_pct = (furnishing_annual_depreciation_rate * furnishing_depreciation_years) * 100
@@ -108,13 +337,13 @@ st.divider()
 st.header("Maintenance")
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-  maintenance_base = st.number_input("Maintenance (monthly €)", value=30)
+  maintenance_base = st.number_input("Maintenance (monthly €)", value=int(loaded.get("maintenance_base", 30)))
 with col2:
-  wg_management_fee = st.number_input("WG management fee (monthly €)", value=30)
+  wg_management_fee = st.number_input("WG management fee (monthly €)", value=int(loaded.get("wg_management_fee", 30)))
 with col3:
-  unit_management_fee = st.number_input("Unit management fee (monthly €)", value=0)
+  unit_management_fee = st.number_input("Unit management fee (monthly €)", value=int(loaded.get("unit_management_fee", 0)))
 with col4:  
-  maintenance_growth = st.number_input("Maintenance growth (annual %)", value=2.0) / 100
+  maintenance_growth = st.number_input("Maintenance growth (annual %)", value=float(loaded.get("maintenance_growth", 2.0))) / 100
 maintenance_total = maintenance_base + wg_management_fee + unit_management_fee
 st.metric("Total monthly maintenance", f"€ {maintenance_total:,.2f}")
 st.divider()
@@ -122,17 +351,17 @@ st.divider()
 st.header("Depreciation")
 col1, col2, col3 = st.columns(3)
 with col1:
-  sonder_afa_rate = st.number_input("Sonder-AfA rate (%)", value=5.0) / 100
+  sonder_afa_rate = st.number_input("Sonder-AfA rate (%)", value=float(loaded.get("sonder_afa_rate", 5.0))) / 100
 with col2:
-  sonder_afa_years = st.number_input("Sonder-AfA years", value=4)
+  sonder_afa_years = st.number_input("Sonder-AfA years", value=int(loaded.get("sonder_afa_years", 4)))
 with col3:
-  sonder_afa_base_amount = st.number_input("Sonder-AfA base amount (€)", value=286000, step=1000)
+  sonder_afa_base_amount = st.number_input("Sonder-AfA base amount (€)", value=int(loaded.get("sonder_afa_base_amount", 286000)), step=1000)
 with col1:
-  degressive_afa_rate = st.number_input("Degressive AfA rate (%)", value=5.0) / 100
+  degressive_afa_rate = st.number_input("Degressive AfA rate (%)", value=float(loaded.get("degressive_afa_rate", 5.0))) / 100
 with col2:
-  degressive_years = st.number_input("Degressive AfA years", value=10)
+  degressive_years = st.number_input("Degressive AfA years", value=int(loaded.get("degressive_years", 10)))
 with col3:
-  linear_years = st.number_input("Linear Afa Years", value=40)
+  linear_years = st.number_input("Linear Afa Years", value=int(loaded.get("linear_years", 40)))
 # total useful years = degressive period + linear period
 useful_years = degressive_years + linear_years
 st.divider()
@@ -141,11 +370,11 @@ st.header("Financing")
 st.subheader("KfW Loan")
 col1, _, _ = st.columns(3)
 with col1:
-  kfw_loan_amount = st.number_input("KfW loan amount (€)", value=150000, step=1000)
+  kfw_loan_amount = st.number_input("KfW loan amount (€)", value=int(loaded.get("kfw_loan_amount", 150000)), step=1000)
 col1, col2, col3 = st.columns(3)
 with col1:
-  kfw_interest_rate = st.number_input("KfW interest (%)", value=2.3) / 100
-  kfw_tilgung_rate = st.number_input("KfW Tilgung (%)", value=2.0) / 100
+  kfw_interest_rate = st.number_input("KfW interest (%)", value=float(loaded.get("kfw_interest_rate", 2.3))) / 100
+  kfw_tilgung_rate = st.number_input("KfW Tilgung (%)", value=float(loaded.get("kfw_tilgung_rate", 2.0))) / 100
 with col2:
   kfw_interest = kfw_loan_amount * kfw_interest_rate
   kfw_tilgung = kfw_loan_amount * kfw_tilgung_rate
@@ -162,8 +391,8 @@ with col1:
   st.metric("Main loan amount (€)", f"€ {main_loan_amount:,.2f}")
 col1, col2, col3 = st.columns(3)
 with col1:
-  main_loan_rate = st.number_input("Main loan interest (%)", value=4.0) / 100
-  main_loan_tilgung_rate = st.number_input("Main loan Tilgung (%)", value=2.0) / 100
+  main_loan_rate = st.number_input("Main loan interest (%)", value=float(loaded.get("main_loan_rate", 4.0))) / 100
+  main_loan_tilgung_rate = st.number_input("Main loan Tilgung (%)", value=float(loaded.get("main_loan_tilgung_rate", 2.0))) / 100
 with col2:
   main_loan_interest = main_loan_amount * main_loan_rate
   main_loan_tilgung = main_loan_amount * main_loan_tilgung_rate
@@ -182,25 +411,27 @@ with col3:
 
 col1, col2, col3 = st.columns(3)
 with col1:
-  bereitstellungszins = st.number_input("Bereitstellungszins (% / month)", value=0.25) / 100
+  bereitstellungszins = st.number_input("Bereitstellungszins (% / month)", value=float(loaded.get("bereitstellungszins", 0.25))) / 100
 with col2:
-  grace_period_months = st.number_input("Grace period (months)", value=12)
+  grace_period_months = st.number_input("Grace period (months)", value=int(loaded.get("grace_period_months", 12)))
 st.divider()
 
 st.header("Tax")
 col1, col2, col3 = st.columns(3)
 with col1:
-  tax_rate = st.number_input("Marginal tax rate (%)", value=42.0) / 100
+  tax_rate = st.number_input("Marginal tax rate (%)", value=float(loaded.get("tax_rate", 42.0))) / 100
 st.divider()
 
 st.header("Timeline")
 col1, col2, col3 = st.columns(3)
 with col1:
-  contract_date = st.date_input("Contract date", value=date(2026, 2, 15))
+  default_contract = date.fromisoformat(loaded["contract_date"]) if "contract_date" in loaded else date(2026, 2, 15)
+  contract_date = st.date_input("Contract date", value=default_contract)
 with col2:
-  end_construction = st.date_input("Construction end date", value=date(2026, 12, 31))
+  default_construction = date.fromisoformat(loaded["end_construction"]) if "end_construction" in loaded else date(2026, 12, 31)
+  end_construction = st.date_input("Construction end date", value=default_construction)
 with col3:
-  output_years = st.number_input("Output horizon (years)", value=30)
+  output_years = st.number_input("Output horizon (years)", value=int(loaded.get("output_years", 30)))
 
 
 
@@ -269,11 +500,10 @@ with st.expander("Installment payment schedule (property)", expanded=False):
 st.divider()
 
 # =========================
-# SIMULATION
+# SIMULATION & DETAILED TABLES
 # =========================
-st.header("Simulation")
-
-show_monthly = st.checkbox("Show monthly details", value=False)
+st.header("📋 Detailed Analysis Tables")
+st.caption("Technical details of loan amortization and tax calculations")
 
 months = []
 bal_main = 0.0
@@ -523,7 +753,12 @@ for entry in monthly_amort:
   provision = entry["provision"]
   # Gross Income = rent - interest - all depreciation - maintenance
   gross_income = rent - interest_total - afa - maintenance
+  
   # Tax Refund / Tax Paid: negative gross_income => refund, positive => tax payable
+  # In Germany (Vermietung und Verpachtung), rental property losses can be offset
+  # against other income (e.g., salary) in the same tax year
+  # Negative gross income → tax refund at your marginal rate
+  # Positive gross income → additional tax owed at your marginal rate
   tax_refund = -gross_income * tax_rate
 
   # cashflow includes tax refund (Tax Paid column removed)
@@ -601,6 +836,12 @@ if not df.empty:
   grouped["Maintenance"] = grouped.get("Maintenance", 0.0)
   grouped["Tax Refund"] = grouped.get("Tax Refund", 0.0)
   grouped["Equity Invested"] = grouped.get("Equity Invested", 0.0)
+  # Add AfA (depreciation) columns
+  grouped["Sonder-Afa"] = grouped.get("Sonder-Afa", 0.0)
+  grouped["Degressive-Afa 10"] = grouped.get("Degressive-Afa 10", 0.0)
+  grouped["Linear-Afa 11"] = grouped.get("Linear-Afa 11", 0.0)
+  grouped["Dep Furnishing"] = grouped.get("Dep Furnishing", 0.0)
+  grouped["Total AfA"] = grouped["Sonder-Afa"] + grouped["Degressive-Afa 10"] + grouped["Linear-Afa 11"] + grouped["Dep Furnishing"]
   grouped["Total Before Tax Refund"] = grouped.get("Rent", 0.0) - grouped.get("Zinsen", 0.0) - grouped.get("Tilgung", 0.0) - grouped.get("Maintenance", 0.0)
   grouped["Total Cash Flow"] = grouped["Total Before Tax Refund"] + grouped["Tax Refund"]
   # determine year-end loan remaining based on cumulative tilgung
@@ -610,7 +851,7 @@ if not df.empty:
   # yearly net cash movement and Cumulative Cash Movement
   grouped["Net Cash Movement"] = grouped["Total Cash Flow"] - grouped.get("Equity Invested", 0.0)
   grouped["Cumulative Cash Movement"] = grouped["Net Cash Movement"].cumsum()
-  yearly_cashflow = grouped[["year", "Rent", "Zinsen", "Tilgung", "Maintenance", "Total Before Tax Refund", "Tax Refund", "Total Cash Flow", "Equity Invested", "Net Cash Movement", "Cumulative Cash Movement", "Loan Remaining"]]
+  yearly_cashflow = grouped[["year", "Rent", "Zinsen", "Tilgung", "Maintenance", "Sonder-Afa", "Degressive-Afa 10", "Linear-Afa 11", "Dep Furnishing", "Total AfA", "Total Before Tax Refund", "Tax Refund", "Total Cash Flow", "Equity Invested", "Net Cash Movement", "Cumulative Cash Movement", "Loan Remaining"]]
 else:
   yearly_cashflow = pd.DataFrame()
 
@@ -641,100 +882,297 @@ for y in range(start_year, start_year + int(output_years)):
   })
 
 ## Section: Amortization
-# monthly amortization DataFrame
-df_amort_month = pd.DataFrame(monthly_amort).copy()
-if show_monthly:
-  st.subheader("Monthly Amortization")
-  if not df_amort_month.empty:
-    df_amort_month["date"] = df_amort_month["date"].dt.strftime("%Y-%m")
-    display_cols = [
-      "date",
-      "Zinsen KfW", "Tilgung KfW", "KfW Payment", "Remaining KfW Balance",
-      "Main Draw", "Zinsen Main", "Tilgung Main", "Main Undrawn", "Bereitstellung", "Remaining Main Balance",
-      "Total Monthly Payment", "Total Loan Remaining"
-    ]
-    display_cols = [c for c in display_cols if c in df_amort_month.columns]
-    num_cols = [c for c in df_amort_month.columns if c != "date"]
-    fmt = {c: "{:,.2f}" for c in num_cols}
-    st.dataframe(df_amort_month[display_cols].style.format(fmt))
-  else:
-    st.write("No monthly amortization data")
+st.subheader("🏦 Loan Amortization Schedule")
+st.caption("Track loan draws, interest, principal payments, and remaining balances")
+
+# Yearly amortization table (default view)
+df_amort_yearly = pd.DataFrame(amort_rows)
+if not df_amort_yearly.empty:
+    with st.expander("📋 Show yearly amortization summary"):
+        st.dataframe(df_amort_yearly.style.format({
+        'KfW Drawn': "€{:,.0f}",
+        'Zinsen KfW': "€{:,.0f}",
+        'Tilgung KfW': "€{:,.0f}",
+        'KfW Payment': "€{:,.0f}",
+        'Remaining KfW Balance': "€{:,.0f}",
+        'Main Drawn': "€{:,.0f}",
+        'Zinsen Main': "€{:,.0f}",
+        'Tilgung Main': "€{:,.0f}",
+        'Main Undrawn': "€{:,.0f}",
+        'Bereitstellung': "€{:,.0f}",
+        'Remaining Main Balance': "€{:,.0f}",
+        'Total Annual Payment': "€{:,.0f}",
+        'Annuity KfW': "€{:,.0f}",
+        'Annuity Main': "€{:,.0f}"
+    }), use_container_width=True)
+    
+    # Monthly details in expander
+    with st.expander("📋 Show monthly amortization details"):
+        df_amort_month = pd.DataFrame(monthly_amort).copy()
+        if not df_amort_month.empty:
+            df_amort_month["date"] = df_amort_month["date"].dt.strftime("%Y-%m")
+            display_cols = [
+                "date",
+                "Zinsen KfW", "Tilgung KfW", "KfW Payment", "Remaining KfW Balance",
+                "Main Draw", "Zinsen Main", "Tilgung Main", "Main Undrawn", "Bereitstellung", "Remaining Main Balance",
+                "Total Monthly Payment", "Total Loan Remaining"
+            ]
+            display_cols = [c for c in display_cols if c in df_amort_month.columns]
+            num_cols = [c for c in df_amort_month.columns if c != "date"]
+            fmt = {c: "€{:,.2f}" for c in num_cols}
+            st.dataframe(df_amort_month[display_cols].style.format(fmt), use_container_width=True)
+        else:
+            st.write("No monthly amortization data")
 else:
-  st.subheader("Yearly Amortization")
-  st.dataframe(pd.DataFrame(amort_rows).style.format("{:,.2f}"))
+    st.info("No amortization data available")
 
 ## Section: Tax
-# monthly tax table
-df_tax_month = df.copy()
-df_tax_month["date_str"] = df_tax_month["date"].dt.strftime("%Y-%m")
-if show_monthly:
-  st.subheader("Monthly Tax")
-  tax_cols = ["date_str", "Rent", "Zinsen", "Sonder-Afa", "Degressive-Afa 10", "Linear-Afa 11", "Dep Furnishing", "Maintenance", "Gross Income", "Tax Paid", "Tax Refund"]
-  tax_cols = [c for c in tax_cols if c in df_tax_month.columns]
-  fmt = {c: "{:,.2f}" for c in tax_cols if c != "date_str"}
-  st.dataframe(df_tax_month[tax_cols].rename(columns={"date_str":"date"}).style.format(fmt))
-else:
-  st.subheader("Yearly Tax")
-  tax_aggs = {}
-  for col in ["Rent", "Zinsen", "Sonder-Afa", "Degressive-Afa 10", "Linear-Afa 11", "Dep Furnishing", "Maintenance", "Gross Income", "Tax Paid", "Tax Refund"]:
+st.subheader("💶 Tax Calculation Details")
+st.caption("Understand how AfA (depreciation) reduces your taxable income")
+
+# Yearly tax table (default view)
+tax_aggs = {}
+for col in ["Rent", "Zinsen", "Sonder-Afa", "Degressive-Afa 10", "Linear-Afa 11", "Dep Furnishing", "Maintenance", "Gross Income", "Tax Paid", "Tax Refund"]:
     if col in df.columns:
-      tax_aggs[col] = 'sum'
-  if tax_aggs:
+        tax_aggs[col] = 'sum'
+
+if tax_aggs:
     yearly_tax = df.groupby(df["date"].dt.year).agg(tax_aggs).rename_axis("year").reset_index()
-    st.dataframe(yearly_tax.style.format({c:"{:,.0f}" for c in yearly_tax.columns if c != 'year'}))
-  else:
-    st.write("No tax data available")
-
-## Section: Cashflow
-if show_monthly:
-  st.subheader("Monthly Cashflow & Tax Details")
-  df_monthly = df.copy()
-  df_monthly["date"] = df_monthly["date"].dt.strftime("%Y-%m")
-  # compute monthly tilgung and totals for display
-  df_monthly["Tilgung"] = df_monthly.get("Tilgung KfW", 0.0) + df_monthly.get("Tilgung Main", 0.0)
-  df_monthly["Total Before Tax Refund"] = df_monthly.get("Rent", 0.0) - df_monthly.get("Zinsen", 0.0) - df_monthly.get("Tilgung", 0.0) - df_monthly.get("Maintenance", 0.0)
-  df_monthly["Total Cash Flow"] = df_monthly["Total Before Tax Refund"] + df_monthly.get("Tax Refund", 0.0)
-  # include equity invested as outflow for liquidity tracking
-  df_monthly["Equity Invested"] = df_monthly.get("Equity Invested", 0.0)
-  df_monthly["Net Cash Movement"] = df_monthly["Total Cash Flow"] - df_monthly["Equity Invested"]
-  df_monthly["Cumulative Cash Movement"] = df_monthly["Net Cash Movement"].cumsum()
-  # cumulative principal paid (Tilgung) and loan remaining based on total loan - cumulative tilgung
-  df_monthly["Cum Tilgung"] = df_monthly.get("Tilgung", 0.0).cumsum()
-  df_monthly["Loan Remaining"] = total_loan_amount - df_monthly["Cum Tilgung"]
-  cashflow_cols = ["date", "Rent", "Zinsen", "Tilgung", "Maintenance", "Total Before Tax Refund", "Tax Refund", "Total Cash Flow", "Equity Invested", "Net Cash Movement", "Cumulative Cash Movement", "Loan Remaining"]
-  cashflow_cols = [c for c in cashflow_cols if c in df_monthly.columns]
-  num_cols = [c for c in cashflow_cols if c != "date"]
-  fmt = {c: "{:,.2f}" for c in num_cols}
-  st.dataframe(df_monthly[cashflow_cols].rename(columns={"date":"Date"}).style.format(fmt))
+    
+    with st.expander("📋 Show yearly tax summary"):
+        st.dataframe(yearly_tax.style.format({
+        'Rent': "€{:,.0f}",
+        'Zinsen': "€{:,.0f}",
+        'Sonder-Afa': "€{:,.0f}",
+        'Degressive-Afa 10': "€{:,.0f}",
+        'Linear-Afa 11': "€{:,.0f}",
+        'Dep Furnishing': "€{:,.0f}",
+        'Maintenance': "€{:,.0f}",
+        'Gross Income': "€{:,.0f}",
+        'Tax Paid': "€{:,.0f}",
+        'Tax Refund': "€{:,.0f}"
+    }), use_container_width=True)
+    
+    # Monthly details in expander
+    with st.expander("📋 Show monthly tax calculation details"):
+        df_tax_month = df.copy()
+        df_tax_month["date"] = df_tax_month["date"].dt.strftime("%Y-%m")
+        tax_cols = ["date", "Rent", "Zinsen", "Sonder-Afa", "Degressive-Afa 10", "Linear-Afa 11", "Dep Furnishing", "Maintenance", "Gross Income", "Tax Paid", "Tax Refund"]
+        tax_cols = [c for c in tax_cols if c in df_tax_month.columns]
+        fmt = {c: "€{:,.2f}" for c in tax_cols if c != "date"}
+        st.dataframe(df_tax_month[tax_cols].style.format(fmt), use_container_width=True)
 else:
-  st.subheader("Yearly Cashflow Results")
-  if not yearly_cashflow.empty:
-    st.dataframe(yearly_cashflow.style.format({c:"{:,.2f}" for c in yearly_cashflow.columns if c != 'year'}))
-  else:
-    st.write("No cashflow data available")
+    st.info("No tax data available")
+
+st.divider()
 
 # =========================
-# KPIs
+# VIEW 1: MONTHLY BUDGET IMPACT
 # =========================
+st.header("📊 View 1: Monthly Budget Impact")
+st.caption("How much does this property cost in your monthly budget?")
 
+if not df.empty:
+    # Construction Period Summary
+    st.subheader("🏗️ Construction Period")
+    df_construction = df[df["date"] < rent_start].copy()
+    
+    if not df_construction.empty:
+        # Calculate construction period budget items
+        df_construction["Total Loan Payment"] = df_construction.get("Zinsen KfW", 0) + df_construction.get("Zinsen Main", 0) + df_construction.get("Tilgung KfW", 0) + df_construction.get("Tilgung Main", 0)
+        df_construction["Interest Only"] = df_construction.get("Zinsen KfW", 0) + df_construction.get("Zinsen Main", 0)
+        df_construction["Bereitstellung"] = df_construction.get("Bereitstellung", 0)
+        df_construction["Equity Payments"] = df_construction.get("Equity Invested", 0)
+        df_construction["Tax Refund"] = df_construction.get("Tax Refund", 0)
+        # Cash flow: negative = you pay out, positive = you receive
+        df_construction["Monthly Cash Flow (Pre-Tax)"] = -(df_construction["Interest Only"] + df_construction["Bereitstellung"] + df_construction["Equity Payments"])
+        df_construction["Monthly Cash Flow (After Tax)"] = df_construction["Monthly Cash Flow (Pre-Tax)"] + df_construction["Tax Refund"]
+        
+        # Yearly summary for construction period
+        df_construction_yearly = df_construction.groupby(df_construction["date"].dt.year).agg({
+            "Equity Payments": "sum",
+            "Interest Only": "sum",
+            "Bereitstellung": "sum",
+            "Tax Refund": "sum",
+            "Monthly Cash Flow (Pre-Tax)": "sum",
+            "Monthly Cash Flow (After Tax)": "sum"
+        }).rename_axis("Year").reset_index()
+        
+
+        # Summary metrics for construction period
+        col1, col2, col3, col4, col5 = st.columns(5)
+        with col1:
+            total_equity = df_construction["Equity Payments"].sum()
+            st.metric("Total Equity Paid", f"€ {total_equity:,.0f}", help="Total equity payments during construction")
+        with col2:
+            total_interest = df_construction["Interest Only"].sum()
+            st.metric("Total Interest Paid", f"€ {total_interest:,.0f}", help="Interest on drawn loans during construction")
+        with col3:
+            total_bereit = df_construction["Bereitstellung"].sum()
+            st.metric("Total Bereitstellungszins", f"€ {total_bereit:,.0f}", help="Commitment fees on undrawn loan amounts")
+        with col4:
+            total_tax_refund = df_construction["Tax Refund"].sum()
+            st.metric("Total Tax Refund", f"€ {total_tax_refund:,.0f}", help="Tax refunds from deducting interest and fees")
+        with col5:
+            total_cash_flow = df_construction["Monthly Cash Flow (After Tax)"].sum()
+            st.metric("Net Cash Flow", f"€ {total_cash_flow:,.0f}", help="Total net cash flow (negative = you pay)")
+        
+        # Show detailed construction period table if requested
+        with st.expander("📋 Show yearly construction summary"):
+            st.dataframe(df_construction_yearly.style.format({
+                "Equity Payments": "€{:,.0f}",
+                "Interest Only": "€{:,.0f}",
+                "Bereitstellung": "€{:,.0f}",
+                "Tax Refund": "€{:,.0f}",
+                "Monthly Cash Flow (Pre-Tax)": "€{:,.0f}",
+                "Monthly Cash Flow (After Tax)": "€{:,.0f}"
+            }), use_container_width=True)
+        
+        with st.expander("📋 Show monthly construction period breakdown"):
+            df_construction_display = df_construction[["date", "Equity Payments", "Interest Only", "Bereitstellung", "Tax Refund", "Monthly Cash Flow (Pre-Tax)", "Monthly Cash Flow (After Tax)"]].copy()
+            df_construction_display["date"] = df_construction_display["date"].dt.strftime("%Y-%m")
+            st.dataframe(df_construction_display.style.format({
+                "Equity Payments": "€{:,.2f}",
+                "Interest Only": "€{:,.2f}",
+                "Bereitstellung": "€{:,.2f}",
+                "Tax Refund": "€{:,.2f}",
+                "Monthly Cash Flow (Pre-Tax)": "€{:,.2f}",
+                "Monthly Cash Flow (After Tax)": "€{:,.2f}"
+            }))
+    else:
+        st.info("Construction period has already passed or starts in the future.")
+    
+    st.divider()
+    
+    # Rental Period
+    st.subheader("🏠 Rental Period")
+    df_rental = df[df["date"] >= rent_start].copy()
+    
+    if not df_rental.empty:
+        # Calculate monthly budget items
+        df_budget = df_rental[["date", "Rent", "Maintenance", "Zinsen KfW", "Zinsen Main", "Tilgung KfW", "Tilgung Main", "Tax Refund"]].copy()
+        df_budget["Total Loan Payment"] = df_budget["Zinsen KfW"] + df_budget["Zinsen Main"] + df_budget["Tilgung KfW"] + df_budget["Tilgung Main"]
+        # Monthly Out-of-Pocket (before tax benefit) - positive = you pay, negative = you profit
+        df_budget["Monthly Cash Flow (Pre-Tax)"] = df_budget["Rent"] - df_budget["Total Loan Payment"] - df_budget["Maintenance"]
+        # After receiving tax refund (positive refund improves your cash flow)
+        df_budget["Monthly Cash Flow (After Tax)"] = df_budget["Monthly Cash Flow (Pre-Tax)"] + df_budget["Tax Refund"]
+        
+        # Yearly summary for rental period
+        df_rental_yearly = df_budget.groupby(df_budget["date"].dt.year).agg({
+            "Rent": "sum",
+            "Maintenance": "sum",
+            "Total Loan Payment": "sum",
+            "Tax Refund": "sum",
+            "Monthly Cash Flow (Pre-Tax)": "sum",
+            "Monthly Cash Flow (After Tax)": "sum"
+        }).rename_axis("Year").reset_index()
+        
+
+        # Reorder columns for better flow
+        df_budget = df_budget[["date", "Rent", "Maintenance", "Zinsen KfW", "Zinsen Main", "Tilgung KfW", "Tilgung Main", "Total Loan Payment", "Monthly Cash Flow (Pre-Tax)", "Tax Refund", "Monthly Cash Flow (After Tax)"]]
+        
+        # Show first year and year 10 as examples
+        first_year = df_budget[df_budget["date"].dt.year == rent_start.year].copy()
+        year_10 = df_budget[df_budget["date"].dt.year == rent_start.year + 9].copy()
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader(f"Year 1 (First Rental Year - {rent_start.year})")
+            if not first_year.empty:
+                avg_rent = first_year["Rent"].mean()
+                avg_loan_payment = first_year["Total Loan Payment"].mean()
+                avg_maintenance = first_year["Maintenance"].mean()
+                avg_tax_refund = first_year["Tax Refund"].mean()
+                avg_pre_tax_cf = first_year["Monthly Cash Flow (Pre-Tax)"].mean()
+                avg_after_tax_cf = first_year["Monthly Cash Flow (After Tax)"].mean()
+                
+                st.caption("💶 Money Coming In")
+                st.metric("Rental Income", f"€ {avg_rent:,.2f}")
+                st.metric("Tax Refund", f"€ {avg_tax_refund:,.2f}", help="Tax refund from deducting interest, AfA, and maintenance")
+                
+                st.caption("💸 Money Going Out")
+                st.metric("Loan Payment (Principal + Interest)", f"€ {avg_loan_payment:,.2f}")
+                st.metric("Maintenance & Management", f"€ {avg_maintenance:,.2f}")
+                
+                st.caption("💰 Bottom Line")
+                st.metric("Monthly Cash Flow (Pre-Tax)", f"€ {avg_pre_tax_cf:,.2f}", help="Negative = out of pocket, Positive = surplus")
+                st.metric("✅ Monthly Cash Flow (After Tax)", f"€ {avg_after_tax_cf:,.2f}", help="Final monthly cash position. Negative = you pay from pocket, Positive = net income", delta=f"+€ {avg_tax_refund:,.2f}" if avg_tax_refund > 0 else None, delta_color="normal")
+        
+        with col2:
+            st.subheader(f"Year 10 ({rent_start.year + 9})")
+            if not year_10.empty:
+                avg_rent = year_10["Rent"].mean()
+                avg_loan_payment = year_10["Total Loan Payment"].mean()
+                avg_maintenance = year_10["Maintenance"].mean()
+                avg_tax_refund = year_10["Tax Refund"].mean()
+                avg_pre_tax_cf = year_10["Monthly Cash Flow (Pre-Tax)"].mean()
+                avg_after_tax_cf = year_10["Monthly Cash Flow (After Tax)"].mean()
+                
+                st.caption("💶 Money Coming In")
+                st.metric("Rental Income", f"€ {avg_rent:,.2f}")
+                st.metric("Tax Refund", f"€ {avg_tax_refund:,.2f}", help="Tax refund from deducting interest, AfA, and maintenance")
+                
+                st.caption("💸 Money Going Out")
+                st.metric("Loan Payment (Principal + Interest)", f"€ {avg_loan_payment:,.2f}")
+                st.metric("Maintenance & Management", f"€ {avg_maintenance:,.2f}")
+                
+                st.caption("💰 Bottom Line")
+                st.metric("Monthly Cash Flow (Pre-Tax)", f"€ {avg_pre_tax_cf:,.2f}", help="Negative = out of pocket, Positive = surplus")
+                st.metric("✅ Monthly Cash Flow (After Tax)", f"€ {avg_after_tax_cf:,.2f}", help="Final monthly cash position. Negative = you pay from pocket, Positive = net income", delta=f"+€ {avg_tax_refund:,.2f}" if avg_tax_refund > 0 else None, delta_color="normal")
+            else:
+                st.info("Year 10 data not available in simulation period")
+        
+        # Show detailed monthly table if requested
+        with st.expander("📋 Show yearly rental summary"):
+            st.dataframe(df_rental_yearly.style.format({
+                "Rent": "€{:,.0f}",
+                "Maintenance": "€{:,.0f}",
+                "Total Loan Payment": "€{:,.0f}",
+                "Tax Refund": "€{:,.0f}",
+                "Monthly Cash Flow (Pre-Tax)": "€{:,.0f}",
+                "Monthly Cash Flow (After Tax)": "€{:,.0f}"
+            }), use_container_width=True)
+        
+        with st.expander("📋 Show detailed monthly rental period breakdown"):
+            df_budget_display = df_budget.copy()
+            df_budget_display["date"] = df_budget_display["date"].dt.strftime("%Y-%m")
+            st.dataframe(df_budget_display.style.format({
+                "Rent": "€{:,.2f}",
+                "Maintenance": "€{:,.2f}",
+                "Zinsen KfW": "€{:,.2f}",
+                "Zinsen Main": "€{:,.2f}",
+                "Tilgung KfW": "€{:,.2f}",
+                "Tilgung Main": "€{:,.2f}",
+                "Total Loan Payment": "€{:,.2f}",
+                "Monthly Cash Flow (Pre-Tax)": "€{:,.2f}",
+                "Tax Refund": "€{:,.2f}",
+                "Monthly Cash Flow (After Tax)": "€{:,.2f}"
+            }))
+    else:
+        st.info("Rental period has not started yet in the simulation timeframe.")
+else:
+    st.write("No data available")
+
+st.divider()
+
+# =========================
+# VIEW 2: INVESTMENT RETURNS ANALYSIS (IRR-FOCUSED)
+# =========================
+st.header("📈 View 2: Investment Returns Analysis")
+st.caption("Pure investment perspective: What are your returns when selling after X years?")
+
+# Add debug toggle
 col1, col2, col3 = st.columns(3)
 with col1:
-  sale_growth = st.number_input("Property value growth (%)", value=2.0, step=0.5) / 100
+  sale_growth = st.slider("Property value growth (%)", min_value=0.0, max_value=10.0, value=float(loaded.get("sale_growth", 2.0)), step=0.1) / 100
+with col2:
+  show_irr_debug = st.checkbox("Show IRR calculation details", value=False, help="Debug: Show the cashflow series used for IRR calculation")
 
-
-st.write(yearly_cashflow)
-
-
-import numpy_financial as npf
-
-# =========================
-# Realistic Investment Returns (From Year 5 Onwards, Detailed + IRR)
-# =========================
-st.header("Investment Returns from Year 5 (with IRR)")
 
 if not yearly_cashflow.empty:
     purchase_year = start_year
-    start_calc_year = purchase_year  # 5th year after purchase
+    start_calc_year = purchase_year
 
     yearly_filtered = yearly_cashflow[yearly_cashflow["year"] >= start_calc_year].reset_index(drop=True)
     years = yearly_filtered["year"].values
@@ -745,12 +1183,17 @@ if not yearly_cashflow.empty:
     cum_out_maint_list = []
     cum_in_rent_list = []
     cum_in_tax_list = []
+    cum_afa_sonder_list = []
+    cum_afa_degressive_list = []
+    cum_afa_linear_list = []
+    cum_afa_furnishing_list = []
+    cum_afa_total_list = []
     total_outflow_list = []
     total_inflow_list = []
     projected_price_list = []
     profit_list = []
     roi_list = []
-    ann_roi_list = []
+    cagr_list = []
     irr_list = []
 
     cum_out_eq = 0.0
@@ -758,9 +1201,16 @@ if not yearly_cashflow.empty:
     cum_out_maint = 0.0
     cum_in_rent = 0.0
     cum_in_tax = 0.0
+    cum_afa_sonder = 0.0
+    cum_afa_degressive = 0.0
+    cum_afa_linear = 0.0
+    cum_afa_furnishing = 0.0
 
     initial_price = total_purchase_price
 
+    # Build discrete annual cashflow series for IRR calculation
+    irr_cashflows_year_10 = []  # For debugging
+    
     for i, y in enumerate(years):
         equity = yearly_filtered.loc[i, "Equity Invested"]
         interest_paid = yearly_filtered.loc[i, "Zinsen"]
@@ -768,6 +1218,12 @@ if not yearly_cashflow.empty:
         rent_received = yearly_filtered.loc[i, "Rent"]
         tax_refund = yearly_filtered.loc[i, "Tax Refund"]
         loan_remaining = yearly_filtered.loc[i, "Loan Remaining"]
+        # AfA (depreciation) components
+        afa_sonder = yearly_filtered.loc[i, "Sonder-Afa"]
+        afa_degressive = yearly_filtered.loc[i, "Degressive-Afa 10"]
+        afa_linear = yearly_filtered.loc[i, "Linear-Afa 11"]
+        afa_furnishing = yearly_filtered.loc[i, "Dep Furnishing"]
+        afa_total = yearly_filtered.loc[i, "Total AfA"]
 
         # cumulative sums
         cum_out_eq += equity
@@ -775,6 +1231,10 @@ if not yearly_cashflow.empty:
         cum_out_maint += maintenance_paid
         cum_in_rent += rent_received
         cum_in_tax += tax_refund
+        cum_afa_sonder += afa_sonder
+        cum_afa_degressive += afa_degressive
+        cum_afa_linear += afa_linear
+        cum_afa_furnishing += afa_furnishing
 
         cum_outflow = cum_out_eq + cum_out_interest + cum_out_maint
         cum_inflow = cum_in_rent + cum_in_tax
@@ -782,29 +1242,71 @@ if not yearly_cashflow.empty:
         # projected property price
         price = initial_price * ((1 + sale_growth) ** (y - purchase_year))
 
-        # profit
-        prof = (price - loan_remaining) + cum_inflow - cum_outflow
+        # Annual discrete cashflow (FIXED: not cumulative)
+        annual_outflow = equity + interest_paid + maintenance_paid
+        annual_inflow = rent_received + tax_refund
+        annual_net_cashflow = annual_inflow - annual_outflow
+        
+        # profit if sold this year
+        net_sale_proceeds = price - loan_remaining
+        prof = net_sale_proceeds + cum_inflow - cum_outflow
 
-        # ROI
+        # ROI (simple total return)
         roi_pct = (prof / cum_outflow * 100) if cum_outflow > 0 else 0.0
 
-        # Annualized ROI (CAGR)
+        # CAGR (compound annual growth rate)
         n_years = y - start_calc_year + 1
-        ann_roi_val = ((prof + cum_outflow) / cum_outflow) ** (1 / n_years) - 1 if cum_outflow > 0 else 0.0
+        if cum_outflow > 0 and (prof + cum_outflow) > 0:
+            cagr_val = ((prof + cum_outflow) / cum_outflow) ** (1 / n_years) - 1
+        else:
+            cagr_val = 0.0
 
-        # Build IRR for cumulative cashflows up to this year
-        cashflow_series = []
+        # Build IRR using discrete annual cashflows
+        # IRR structure: Year 0 should be TOTAL initial investment (equity), 
+        # then subsequent years are net operating cashflows (rent + tax - interest - maintenance)
+        # Final year adds the sale proceeds
+        temp_irr_cashflows = []
+        
+        # Build the complete cashflow series from year 0 to current year
         for j in range(i + 1):
-            outflow = yearly_filtered.loc[j, "Equity Invested"] + yearly_filtered.loc[j, "Zinsen"] + yearly_filtered.loc[j, "Maintenance"]
-            inflow = yearly_filtered.loc[j, "Rent"] + yearly_filtered.loc[j, "Tax Refund"]
-            cashflow_series.append(inflow - outflow)
-        # Add net sale proceeds to the last year's cashflow
-        cashflow_series[-1] += price - loan_remaining
+            j_equity = yearly_filtered.loc[j, "Equity Invested"]
+            j_interest = yearly_filtered.loc[j, "Zinsen"]
+            j_maint = yearly_filtered.loc[j, "Maintenance"]
+            j_rent = yearly_filtered.loc[j, "Rent"]
+            j_tax = yearly_filtered.loc[j, "Tax Refund"]
+            
+            if j == 0:
+                # Year 0: Initial equity investment is a negative cashflow
+                # Plus any operating cashflow in year 0 (rent - interest - maintenance + tax)
+                initial_investment = -j_equity
+                operating_cf = j_rent + j_tax - j_interest - j_maint
+                temp_irr_cashflows.append(initial_investment + operating_cf)
+            else:
+                # Subsequent years: net operating cashflow only (no more equity payments typically)
+                # If there are equity payments in later years, they're additional investments
+                net_cf = j_rent + j_tax - j_interest - j_maint - j_equity
+                temp_irr_cashflows.append(net_cf)
+        
+        # Add sale proceeds to the final year (i = current year index)
+        temp_irr_cashflows[-1] += net_sale_proceeds
+        
+        # Calculate IRR
         try:
-            irr_val = npf.irr(cashflow_series)
+            irr_val = npf.irr(temp_irr_cashflows)
+            if irr_val is None or np.isnan(irr_val) or np.isinf(irr_val):
+                irr_val = 0.0
+            else:
+                irr_val = irr_val * 100
         except:
             irr_val = 0.0
-        irr_val = irr_val * 100 if irr_val is not None else 0.0
+        
+        # Store cashflow series for debugging (only for year 10)
+        if y == purchase_year + 9:
+            irr_cashflows_year_10 = temp_irr_cashflows.copy()
+            # Also store the data needed for debug breakdown
+            irr_debug_data_year_10 = {
+                'yearly_data': yearly_filtered.iloc[:i+1].copy()
+            }
 
         # append to lists
         cum_out_eq_list.append(cum_out_eq)
@@ -812,47 +1314,332 @@ if not yearly_cashflow.empty:
         cum_out_maint_list.append(cum_out_maint)
         cum_in_rent_list.append(cum_in_rent)
         cum_in_tax_list.append(cum_in_tax)
+        cum_afa_sonder_list.append(cum_afa_sonder)
+        cum_afa_degressive_list.append(cum_afa_degressive)
+        cum_afa_linear_list.append(cum_afa_linear)
+        cum_afa_furnishing_list.append(cum_afa_furnishing)
+        cum_afa_total_list.append(cum_afa_sonder + cum_afa_degressive + cum_afa_linear + cum_afa_furnishing)
         total_outflow_list.append(cum_outflow)
         total_inflow_list.append(cum_inflow)
         projected_price_list.append(price)
         profit_list.append(prof)
         roi_list.append(roi_pct)
-        ann_roi_list.append(ann_roi_val * 100)
+        cagr_list.append(cagr_val * 100)
         irr_list.append(irr_val)
 
+    # Calculate sale proceeds for display
+    sale_proceeds_list = [projected_price_list[i] - yearly_filtered.loc[i, "Loan Remaining"] 
+                         for i in range(len(projected_price_list))]
+    
     df_real_returns = pd.DataFrame({
         "Year": years,
+        "Years Held": years - purchase_year,
+        # Sale scenario
         "Projected Price (€)": projected_price_list,
         "Outstanding Loan (€)": yearly_filtered["Loan Remaining"],
-        # Outflow breakdown
-        "Equity Invested (€)": cum_out_eq_list,
-        "Interest Paid (€)": cum_out_interest_list,
-        "Maintenance Paid (€)": cum_out_maint_list,
+        "Sale Proceeds (€)": sale_proceeds_list,
+        # Cumulative Outflows
+        "Cum. Equity (€)": cum_out_eq_list,
+        "Cum. Interest (€)": cum_out_interest_list,
+        "Cum. Maintenance (€)": cum_out_maint_list,
         "Total Outflow (€)": total_outflow_list,
-        # Inflow breakdown
-        "Rent Received (€)": cum_in_rent_list,
-        "Tax Refund (€)": cum_in_tax_list,
+        # Cumulative Inflows
+        "Cum. Rent (€)": cum_in_rent_list,
+        "Cum. Tax Refund (€)": cum_in_tax_list,
         "Total Inflow (€)": total_inflow_list,
-        "Profit (€)": profit_list,
-        "ROI (%)": roi_list,
-        "Annualized ROI (%)": ann_roi_list,
-        "IRR (%)": irr_list
+        # Returns Analysis
+        "Net Profit (€)": profit_list,
+        "IRR (%)": irr_list,
+        "CAGR (%)": cagr_list,
+        "ROI (%)": roi_list
     })
+    
+    # Reorder columns: Sale info → Outflows → Inflows → Profit → KPIs
+    df_real_returns = df_real_returns[[
+        "Year",
+        "Years Held",
+        # Sale scenario
+        "Projected Price (€)",
+        "Outstanding Loan (€)",
+        "Sale Proceeds (€)",
+        # Outflows
+        "Cum. Equity (€)",
+        "Cum. Interest (€)",
+        "Cum. Maintenance (€)",
+        "Total Outflow (€)",
+        # Inflows
+        "Cum. Rent (€)",
+        "Cum. Tax Refund (€)",
+        "Total Inflow (€)",
+        # Profit & KPIs
+        "Net Profit (€)",
+        "IRR (%)",
+        "CAGR (%)",
+        "ROI (%)"
+    ]]
+    
+    # Explanation of metrics
+    with st.expander("📚 Understanding Investment Metrics", expanded=False):
+        st.markdown("""
+        ### 🎯 IRR (Internal Rate of Return) - **MOST IMPORTANT**
+        **The gold standard for investment decisions.** IRR represents the annualized rate of return that makes the net present value of all cash flows equal to zero.
+        
+        - **What it means:** If you invested this money at IRR% per year, you'd get the same outcome
+        - **Why it's best:** Accounts for both the timing and size of all cash flows
+        - **How to use:** Compare to alternative investments (stocks typically return 7-10%, bonds 3-5%)
+        - **Example:** An IRR of 8% means you're earning 8% per year on your invested capital
+        
+        ---
+        
+        ### 📈 CAGR (Compound Annual Growth Rate) - **SECOND MOST IMPORTANT**
+        The annualized rate at which your total investment grows, assuming profits are reinvested.
+        
+        - **What it means:** Your average yearly return from start to finish
+        - **Formula:** ((Final Value / Initial Investment)^(1/Years)) - 1
+        - **Difference from IRR:** CAGR is simpler but doesn't account for cash flow timing
+        - **Example:** CAGR of 6% means your investment grows by 6% per year on average
+        
+        ---
+        
+        ### 💰 ROI (Return on Investment) - **THIRD MOST IMPORTANT**
+        Simple total return without considering time or compounding.
+        
+        - **What it means:** Total profit as a percentage of your total investment
+        - **Formula:** (Total Profit / Total Investment) × 100
+        - **Limitation:** Doesn't account for time (100% ROI over 2 years is better than over 20 years)
+        - **Example:** ROI of 150% means you've made 1.5× your initial investment
+        
+        ---
+        
+        ### 🚫 Why Tilgung (Principal) is NOT Included
+        
+        **Tilgung is NOT an expense - it's a wealth transfer!**
+        
+        - When you pay Tilgung, money leaves your account ✓
+        - BUT it reduces your loan balance by the exact same amount ✓
+        - **Net effect on wealth: €0** (cash down, equity up)
+        
+        **What IS included in calculations:**
+        - ✅ **Equity payments** - your actual investment
+        - ✅ **Interest** - cost paid to the bank (lost forever)
+        - ✅ **Maintenance** - operating expenses (consumed)
+        - ✅ **Rent** - income received
+        - ✅ **Tax refunds** - money returned to you
+        - ❌ **Tilgung** - your own money moving between accounts
+        
+        **When you sell:** You recover all Tilgung paid as increased equity (Property Value - Remaining Loan).
+        Including Tilgung as a cost would double-count it!
+        
+        ---
+        
+        ### 📊 AfA (Depreciation) - Tax Benefit Explained
+        
+        AfA is a **non-cash tax deduction** that reduces your taxable income without requiring actual spending.
+        
+        **Types in this calculator:**
+        - **Sonder-AfA:** Special accelerated depreciation (5% for 4 years for new buildings)
+        - **Degressive AfA:** Declining balance method (5% for 10 years)
+        - **Linear AfA:** Straight-line depreciation after degressive period
+        - **Furnishing depreciation:** For furniture and fixtures (10% for 10 years)
+        
+        **Impact:** Higher AfA → Lower taxable income → Bigger tax refund → More cash in your pocket
+        """)
+    
+    # Highlight year 10 if available (define year_10_data first for use in debug section)
+    if len(df_real_returns) >= 10:
+        year_10_data = df_real_returns[df_real_returns["Years Held"] == 9].iloc[0]  # Year 10 is index 9 (0-based)
+        
+        # IRR Debug section
+        if show_irr_debug:
+            st.subheader("🔍 IRR Calculation Debug (Year 10)")
+            st.caption("Shows the annual cashflow series used to calculate IRR for a 10-year hold period")
+            
+            if 'irr_cashflows_year_10' in locals() and len(irr_cashflows_year_10) > 0 and 'irr_debug_data_year_10' in locals():
+                # Build detailed breakdown using stored debug data
+                yearly_data = irr_debug_data_year_10['yearly_data']
+                
+                debug_data = []
+                for j in range(len(irr_cashflows_year_10)):
+                    j_equity = yearly_data.iloc[j]["Equity Invested"]
+                    j_interest = yearly_data.iloc[j]["Zinsen"]
+                    j_maint = yearly_data.iloc[j]["Maintenance"]
+                    j_rent = yearly_data.iloc[j]["Rent"]
+                    j_tax = yearly_data.iloc[j]["Tax Refund"]
+                    j_loan_remaining = yearly_data.iloc[j]["Loan Remaining"]
+                    j_year = yearly_data.iloc[j]["year"]
+                    
+                    # Calculate projected price for this year
+                    j_price = initial_price * ((1 + sale_growth) ** (j_year - purchase_year))
+                    
+                    if j == 0:
+                        operating = j_rent + j_tax - j_interest - j_maint
+                        total_cf = -j_equity + operating
+                        sale_proceeds = 0
+                        desc = "Initial equity + Year 0 operating"
+                    elif j == len(irr_cashflows_year_10) - 1:
+                        operating = j_rent + j_tax - j_interest - j_maint
+                        sale_proceeds = j_price - j_loan_remaining
+                        total_cf = operating + sale_proceeds
+                        desc = f"Year {j} operating + sale proceeds"
+                    else:
+                        operating = j_rent + j_tax - j_interest - j_maint - j_equity
+                        total_cf = operating
+                        sale_proceeds = 0
+                        desc = f"Year {j} operating"
+                    
+                    debug_data.append({
+                        'Year': j,
+                        'Rent': j_rent,
+                        'Tax Refund': j_tax,
+                        'Interest': -j_interest,
+                        'Maintenance': -j_maint,
+                        'Equity': -j_equity if j == 0 else (-j_equity if j_equity > 0 else 0),
+                        'Sale Proceeds': sale_proceeds,
+                        'Net Cashflow': irr_cashflows_year_10[j],
+                        'Description': desc
+                    })
+                
+                debug_df = pd.DataFrame(debug_data)
+                st.dataframe(debug_df.style.format({
+                    'Rent': '€{:,.0f}',
+                    'Tax Refund': '€{:,.0f}',
+                    'Interest': '€{:,.0f}',
+                    'Maintenance': '€{:,.0f}',
+                    'Equity': '€{:,.0f}',
+                    'Sale Proceeds': '€{:,.0f}',
+                    'Net Cashflow': '€{:,.0f}'
+                }), use_container_width=True)
+                
+                # Calculate and verify IRR manually
+                test_irr = npf.irr(irr_cashflows_year_10) * 100 if npf.irr(irr_cashflows_year_10) else 0
+                st.caption(f"✅ Calculated IRR from these cashflows = {test_irr:.2f}%")
+                
+                st.info("""
+                **How to read this table:**
+                - **Year 0:** Your initial equity investment (negative) plus any operating cashflow
+                - **Years 1-9:** Operating cashflow only (Rent + Tax Refund - Interest - Maintenance - Any additional equity)
+                - **Year 9 (final):** Operating cashflow PLUS sale proceeds (Property Price - Outstanding Loan)
+                
+                **Key insight:** The positive cashflows in years 1-8 come from tax refunds at your 42% rate, NOT from selling!
+                Each row in the main table shows IRR "if you sell in that year."
+                """)
+        
+        st.subheader("📍 10-Year Investment Summary (KPIs Ordered by Importance)")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("🥇 IRR (Internal Rate of Return)", f"{year_10_data['IRR (%)']:.2f}%", 
+                     help="Your annualized return - compare this to stocks (7-10%) or bonds (3-5%). This is the MOST IMPORTANT metric.")
+        with col2:
+            st.metric("🥈 CAGR (Compound Annual Growth)", f"{year_10_data['CAGR (%)']:.2f}%", 
+                     help="Your average yearly return rate. Simpler than IRR but doesn't account for cash flow timing.")
+        with col3:
+            st.metric("🥉 ROI (Return on Investment)", f"{year_10_data['ROI (%)']:.2f}%", 
+                     help="Total profit as % of investment. Useful but doesn't consider that this took 10 years.")
+        with col4:
+            st.metric("💶 Net Profit", f"€{year_10_data['Net Profit (€)']:,.0f}", 
+                     help="Total profit in euros if you sell after 10 years")
+        
+        st.caption("📊 **Metrics ordered by importance:** IRR > CAGR > ROI. IRR is the best for comparing to alternative investments.")
 
     st.dataframe(df_real_returns.style.format({
-        "Projected Price (€)": "{:,.2f}",
-        "Outstanding Loan (€)": "{:,.2f}",
-        "Equity Invested (€)": "{:,.2f}",
-        "Interest Paid (€)": "{:,.2f}",
-        "Maintenance Paid (€)": "{:,.2f}",
-        "Total Outflow (€)": "{:,.2f}",
-        "Rent Received (€)": "{:,.2f}",
-        "Tax Refund (€)": "{:,.2f}",
-        "Total Inflow (€)": "{:,.2f}",
-        "Profit (€)": "{:,.2f}",
-        "ROI (%)": "{:.2f}%",
-        "Annualized ROI (%)": "{:.2f}%",
-        "IRR (%)": "{:.2f}%"
+        "Projected Price (€)": "€{:,.0f}",
+        "Outstanding Loan (€)": "€{:,.0f}",
+        "Sale Proceeds (€)": "€{:,.0f}",
+        "Cum. Equity (€)": "€{:,.0f}",
+        "Cum. Interest (€)": "€{:,.0f}",
+        "Cum. Maintenance (€)": "€{:,.0f}",
+        "Total Outflow (€)": "€{:,.0f}",
+        "Cum. Rent (€)": "€{:,.0f}",
+        "Cum. Tax Refund (€)": "€{:,.0f}",
+        "Total Inflow (€)": "€{:,.0f}",
+        "Net Profit (€)": "€{:,.0f}",
+        "IRR (%)": "{:.2f}%",
+        "CAGR (%)": "{:.2f}%",
+        "ROI (%)": "{:.2f}%"
     }))
+    
+    st.caption("📊 **Table structure:** Sale scenario → Your outflows → Your inflows → Net profit → KPIs (IRR/CAGR/ROI). See 'Understanding Investment Metrics' section above for detailed explanations.")
 else:
     st.write("No yearly cashflow data to calculate returns.")
+
+# =========================
+# HANDLE SAVE/LOAD OPERATIONS
+# =========================
+# Check if we need to save
+if 'pending_save' in st.session_state and st.session_state['pending_save']:
+    apartment_name = st.session_state['pending_save']
+    
+    # Collect all input data
+    data_to_save = {
+        "kaufpreis": kaufpreis,
+        "stellplatz": stellplatz,
+        "area": area,
+        "land_ratio": land_ratio,
+        "real_estate_tax_pct": real_estate_transfer_tax / total_purchase_price * 100,
+        "notary_pct": notary / total_purchase_price * 100,
+        "land_charge_fees_pct": land_charge_registration_fees / total_purchase_price * 100,
+        "equity_pct": eigenkapital / total_investment * 100,
+        "rent_per_sqm": rent_per_sqm,
+        "rent_parking": rent_parking,
+        "rent_growth_rate": rent_growth_rate * 100,
+        "furnishing_costs": furnishing_costs,
+        "furnishing_depreciation_rate": furnishing_annual_depreciation_rate * 100,
+        "furnishing_depreciation_years": furnishing_depreciation_years,
+        "maintenance_base": maintenance_base,
+        "wg_management_fee": wg_management_fee,
+        "unit_management_fee": unit_management_fee,
+        "maintenance_growth": maintenance_growth * 100,
+        "sonder_afa_rate": sonder_afa_rate * 100,
+        "sonder_afa_years": sonder_afa_years,
+        "sonder_afa_base_amount": sonder_afa_base_amount,
+        "degressive_afa_rate": degressive_afa_rate * 100,
+        "degressive_years": degressive_years,
+        "linear_years": linear_years,
+        "kfw_loan_amount": kfw_loan_amount,
+        "kfw_interest_rate": kfw_interest_rate * 100,
+        "kfw_tilgung_rate": kfw_tilgung_rate * 100,
+        "main_loan_rate": main_loan_rate * 100,
+        "main_loan_tilgung_rate": main_loan_tilgung_rate * 100,
+        "bereitstellungszins": bereitstellungszins * 100,
+        "grace_period_months": grace_period_months,
+        "tax_rate": tax_rate * 100,
+        "contract_date": contract_date.isoformat(),
+        "end_construction": end_construction.isoformat(),
+        "output_years": output_years,
+        "num_payments": num_payments,
+        "payment_schedule": payment_schedule,
+        "sale_growth": sale_growth * 100
+    }
+    
+    if worksheet:
+        if save_apartment_to_sheets(worksheet, apartment_name, data_to_save):
+            st.success(f"✅ Saved '{apartment_name}' successfully!")
+            del st.session_state['pending_save']
+            st.balloons()
+        else:
+            st.error("Save failed. Please try again.")
+            del st.session_state['pending_save']
+    else:
+        st.error("Storage not available")
+        del st.session_state['pending_save']
+    
+# Check if we need to load
+if 'load_apartment' in st.session_state and st.session_state['load_apartment']:
+    selected_name = st.session_state['load_apartment']
+    
+    # Find the apartment data
+    if worksheet:
+        saved_apartments = load_apartments_from_sheets(worksheet)
+        apartment_data = next((apt for apt in saved_apartments if apt["apartment_name"] == selected_name), None)
+        
+        if apartment_data:
+            st.info(f"📂 Loaded '{selected_name}'. The page will refresh with the saved values.")
+            st.session_state['loaded_data'] = apartment_data
+            del st.session_state['load_apartment']
+            st.rerun()
+
+# Clear loaded data after use (so next time defaults are used)
+if 'loaded_data' in st.session_state and loaded:
+    # Data has been loaded and used, clear it so changing values doesn't conflict
+    pass  # Keep it in session state for the full session

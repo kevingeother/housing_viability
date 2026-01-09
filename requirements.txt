@@ -2,3 +2,7 @@ streamlit
 numpy
 pandas
 numpy-financial
+gspread
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
