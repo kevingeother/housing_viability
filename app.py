@@ -110,7 +110,7 @@ with col1:
     )
     stellplatz = st.number_input(
         "[B] Parking garage price (€)",
-        value=st.session_state.get("stellplatz", 30000),
+        value=st.session_state.get("stellplatz", 12000),
         step=1000,
         key="stellplatz",
     )
@@ -159,7 +159,7 @@ with col1:
         notary = notary_pct / 100 * total_purchase_price
         land_charge_registration_fees_pct = st.number_input(
             "Land charge fees (%)",
-            value=st.session_state.get("land_charge_registration_fees_pct", 0.0),
+            value=st.session_state.get("land_charge_registration_fees_pct", 0.5),
             key="land_charge_registration_fees_pct",
         )
         land_charge_registration_fees = (
@@ -210,7 +210,7 @@ with col1:
         rent_property = rent_per_sqm * area
         rent_parking = st.number_input(
             "Parking rent (€)",
-            value=st.session_state.get("rent_parking", 50),
+            value=st.session_state.get("rent_parking", 40),
             step=10,
             key="rent_parking",
         )
@@ -357,7 +357,7 @@ col1, col2, col3 = st.columns(3)
 with col1:
     kfw_interest_rate_pct = st.number_input(
         "KfW interest (%)",
-        value=st.session_state.get("kfw_interest_rate_pct", 1.15),
+        value=st.session_state.get("kfw_interest_rate_pct", 2.44),
         key="kfw_interest_rate_pct",
     )
     kfw_interest_rate = kfw_interest_rate_pct / 100
@@ -395,7 +395,7 @@ with col1:
     else:
         kfw_tilgung_rate_pct = st.number_input(
             "KfW Tilgung (%)",
-            value=st.session_state.get("kfw_tilgung_rate_pct", 2.0),
+            value=st.session_state.get("kfw_tilgung_rate_pct", 2.24),
             key="kfw_tilgung_rate_pct",
         )
         kfw_tilgung_rate = kfw_tilgung_rate_pct / 100
@@ -442,7 +442,7 @@ col1, col2, col3 = st.columns(3)
 with col1:
     main_loan_rate_pct = st.number_input(
         "Main loan interest (%)",
-        value=st.session_state.get("main_loan_rate_pct", 4.0),
+        value=st.session_state.get("main_loan_rate_pct", 4.11),
         key="main_loan_rate_pct",
     )
     main_loan_rate = main_loan_rate_pct / 100
@@ -456,7 +456,7 @@ with col1:
     if main_calc_method == "Tilgung rate (%)":
         main_loan_tilgung_rate_pct = st.number_input(
             "Main loan Tilgung (%)",
-            value=st.session_state.get("main_loan_tilgung_rate_pct", 2.0),
+            value=st.session_state.get("main_loan_tilgung_rate_pct", 1.0),
             key="main_loan_tilgung_rate_pct",
         )
         main_loan_tilgung_rate = main_loan_tilgung_rate_pct / 100
