@@ -187,7 +187,7 @@ with col1:
     with col3:
         eigenkapital_pct = st.number_input(
             "Equity (%)",
-            value=st.session_state.get("eigenkapital_pct", 5.265),
+            value=st.session_state.get("eigenkapital_pct", 5.2665),
             key="eigenkapital_pct",
         )
         eigenkapital = eigenkapital_pct / 100 * total_investment
