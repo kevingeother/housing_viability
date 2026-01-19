@@ -316,7 +316,7 @@ with col2:
 with col3:
     sonder_afa_base_amount = st.number_input(
         "Sonder-AfA base amount (€)",
-        value=st.session_state.get("sonder_afa_base_amount", 286000),
+        value=st.session_state.get("sonder_afa_base_amount", 263640),
         step=1000,
         key="sonder_afa_base_amount",
     )
