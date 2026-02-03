@@ -110,7 +110,7 @@ with col1:
     )
     stellplatz = st.number_input(
         "[B] Parking garage price (€)",
-        value=st.session_state.get("stellplatz", 12000),
+        value=st.session_state.get("stellplatz", 30000),
         step=1000,
         key="stellplatz",
     )
@@ -210,7 +210,7 @@ with col1:
         rent_property = rent_per_sqm * area
         rent_parking = st.number_input(
             "Parking rent (€)",
-            value=st.session_state.get("rent_parking", 40),
+            value=st.session_state.get("rent_parking", 80),
             step=10,
             key="rent_parking",
         )
@@ -316,7 +316,7 @@ with col2:
 with col3:
     sonder_afa_base_amount = st.number_input(
         "Sonder-AfA base amount (€)",
-        value=st.session_state.get("sonder_afa_base_amount", 263640),
+        value=st.session_state.get("sonder_afa_base_amount", 284120),
         step=1000,
         key="sonder_afa_base_amount",
     )
@@ -357,18 +357,39 @@ col1, col2, col3 = st.columns(3)
 with col1:
     kfw_interest_rate_pct = st.number_input(
         "KfW interest (%)",
-        value=st.session_state.get("kfw_interest_rate_pct", 2.44),
+        value=st.session_state.get("kfw_interest_rate_pct", 2.42),
         key="kfw_interest_rate_pct",
     )
     kfw_interest_rate = kfw_interest_rate_pct / 100
     kfw_calc_method = st.radio(
         "KfW repayment calculation",
-        ["Loan term (years)", "Tilgung rate (%)"],
+        ["Tilgung rate (%)", "Loan term (years)"],
         index=st.session_state.get("kfw_calc_method_idx", 0),
         key="kfw_calc_method",
     )
 
-    if kfw_calc_method == "Loan term (years)":
+    if kfw_calc_method == "Tilgung rate (%)":
+        kfw_tilgung_rate_pct = st.number_input(
+            "KfW Tilgung (%)",
+            value=st.session_state.get("kfw_tilgung_rate_pct", 2.27),
+            key="kfw_tilgung_rate_pct",
+        )
+        kfw_tilgung_rate = kfw_tilgung_rate_pct / 100
+        # Calculate effective loan term from tilgung rate
+        if kfw_interest_rate > 0 and kfw_tilgung_rate > 0:
+            monthly_payment = (
+                kfw_loan_amount * (kfw_interest_rate + kfw_tilgung_rate) / 12
+            )
+            monthly_rate = kfw_interest_rate / 12
+            kfw_loan_term_years = (
+                -np.log(1 - (kfw_loan_amount * monthly_rate / monthly_payment))
+                / np.log(1 + monthly_rate)
+                / 12
+            )
+        else:
+            kfw_loan_term_years = 1.0 / kfw_tilgung_rate if kfw_tilgung_rate > 0 else 30
+        st.caption(f"→ Effective loan term: {kfw_loan_term_years:.1f} years")
+    else:
         kfw_loan_term_years = st.number_input(
             "KfW loan term (years)",
             value=st.session_state.get("kfw_loan_term_years", 35),
@@ -392,27 +413,6 @@ with col1:
         else:
             kfw_tilgung_rate = 1.0 / kfw_loan_term_years
         st.caption(f"→ Effective tilgung rate: {kfw_tilgung_rate * 100:.2f}%")
-    else:
-        kfw_tilgung_rate_pct = st.number_input(
-            "KfW Tilgung (%)",
-            value=st.session_state.get("kfw_tilgung_rate_pct", 2.24),
-            key="kfw_tilgung_rate_pct",
-        )
-        kfw_tilgung_rate = kfw_tilgung_rate_pct / 100
-        # Calculate effective loan term from tilgung rate
-        if kfw_interest_rate > 0 and kfw_tilgung_rate > 0:
-            monthly_payment = (
-                kfw_loan_amount * (kfw_interest_rate + kfw_tilgung_rate) / 12
-            )
-            monthly_rate = kfw_interest_rate / 12
-            kfw_loan_term_years = (
-                -np.log(1 - (kfw_loan_amount * monthly_rate / monthly_payment))
-                / np.log(1 + monthly_rate)
-                / 12
-            )
-        else:
-            kfw_loan_term_years = 1.0 / kfw_tilgung_rate if kfw_tilgung_rate > 0 else 30
-        st.caption(f"→ Effective loan term: {kfw_loan_term_years:.1f} years")
 
     kfw_tilgung_free_years = st.number_input(
         "KfW tilgung-free period (years)",
@@ -442,7 +442,7 @@ col1, col2, col3 = st.columns(3)
 with col1:
     main_loan_rate_pct = st.number_input(
         "Main loan interest (%)",
-        value=st.session_state.get("main_loan_rate_pct", 4.11),
+        value=st.session_state.get("main_loan_rate_pct", 3.99),
         key="main_loan_rate_pct",
     )
     main_loan_rate = main_loan_rate_pct / 100
@@ -1825,6 +1825,30 @@ with col1:
     )
     sale_growth = sale_growth_pct / 100
 with col2:
+    mirr_reinvestment_rate_pct = st.slider(
+        "MIRR reinvestment rate (%)",
+        min_value=0.0,
+        max_value=15.0,
+        value=st.session_state.get("mirr_reinvestment_rate_pct", 7.0),
+        step=0.1,
+        key="mirr_reinvestment_rate_pct",
+        help="Realistic rate for reinvesting cashflows (stocks ~7-10%, bonds ~3-5%)",
+    )
+    mirr_reinvestment_rate = mirr_reinvestment_rate_pct / 100
+with col3:
+    selling_costs_pct = st.slider(
+        "Selling costs (%)",
+        min_value=0.0,
+        max_value=10.0,
+        value=st.session_state.get("selling_costs_pct", 4.0),
+        step=0.1,
+        key="selling_costs_pct",
+        help="Broker fees, notary, taxes when selling the property",
+    )
+    selling_costs_rate = selling_costs_pct / 100
+
+col1, col2, col3 = st.columns(3)
+with col1:
     show_irr_debug = st.checkbox(
         "Show IRR calculation details",
         value=st.session_state.get("show_irr_debug", False),
@@ -1860,6 +1884,7 @@ if not yearly_cashflow.empty:
     roi_list = []
     cagr_list = []
     irr_list = []
+    mirr_list = []
 
     cum_out_eq = 0.0
     cum_out_interest = 0.0
@@ -1912,8 +1937,11 @@ if not yearly_cashflow.empty:
         annual_inflow = rent_received + tax_refund
         annual_net_cashflow = annual_inflow - annual_outflow
 
-        # profit if sold this year
-        net_sale_proceeds = price - loan_remaining
+        # profit if sold this year (after selling costs)
+        gross_sale_price = price
+        selling_costs = gross_sale_price * selling_costs_rate
+        net_sale_price = gross_sale_price - selling_costs
+        net_sale_proceeds = net_sale_price - loan_remaining
         prof = net_sale_proceeds + cum_inflow - cum_outflow
 
         # ROI (simple total return)
@@ -1927,8 +1955,8 @@ if not yearly_cashflow.empty:
             cagr_val = 0.0
 
         # Build IRR using discrete annual cashflows
-        # IRR structure: Year 0 should be TOTAL initial investment (equity),
-        # then subsequent years are net operating cashflows (rent + tax - interest - maintenance)
+        # IRR structure: All equity investments are negative cashflows (when they occur),
+        # Operating cashflows are: rent + tax - interest - maintenance
         # Final year adds the sale proceeds
         temp_irr_cashflows = []
 
@@ -1940,17 +1968,13 @@ if not yearly_cashflow.empty:
             j_rent = yearly_filtered.loc[j, "Rent"]
             j_tax = yearly_filtered.loc[j, "Tax Refund"]
 
-            if j == 0:
-                # Year 0: Initial equity investment is a negative cashflow
-                # Plus any operating cashflow in year 0 (rent - interest - maintenance + tax)
-                initial_investment = -j_equity
-                operating_cf = j_rent + j_tax - j_interest - j_maint
-                temp_irr_cashflows.append(initial_investment + operating_cf)
-            else:
-                # Subsequent years: net operating cashflow only (no more equity payments typically)
-                # If there are equity payments in later years, they're additional investments
-                net_cf = j_rent + j_tax - j_interest - j_maint - j_equity
-                temp_irr_cashflows.append(net_cf)
+            # Equity payments are negative cashflows (investments)
+            # Operating cashflow is: rent + tax - interest - maintenance
+            equity_outflow = -j_equity if j_equity > 0 else 0
+            operating_cf = j_rent + j_tax - j_interest - j_maint
+            total_cf = equity_outflow + operating_cf
+
+            temp_irr_cashflows.append(total_cf)
 
         # Add sale proceeds to the final year (i = current year index)
         temp_irr_cashflows[-1] += net_sale_proceeds
@@ -1964,6 +1988,21 @@ if not yearly_cashflow.empty:
                 irr_val = irr_val * 100
         except:
             irr_val = 0.0
+
+        # Calculate MIRR (Modified IRR) with realistic reinvestment rate
+        # MIRR assumes positive cashflows are reinvested at a realistic "finance_rate"
+        # and negative cashflows are financed at "finance_rate"
+        # Using the user-specified reinvestment rate (default 7%)
+        try:
+            mirr_val = npf.mirr(
+                temp_irr_cashflows, mirr_reinvestment_rate, mirr_reinvestment_rate
+            )
+            if mirr_val is None or np.isnan(mirr_val) or np.isinf(mirr_val):
+                mirr_val = 0.0
+            else:
+                mirr_val = mirr_val * 100
+        except:
+            mirr_val = 0.0
 
         # Store cashflow series for debugging (only for year 10)
         if y == purchase_year + 9:
@@ -1993,10 +2032,12 @@ if not yearly_cashflow.empty:
         roi_list.append(roi_pct)
         cagr_list.append(cagr_val * 100)
         irr_list.append(irr_val)
+        mirr_list.append(mirr_val)
 
-    # Calculate sale proceeds for display
+    # Calculate sale proceeds for display (after selling costs)
     sale_proceeds_list = [
-        projected_price_list[i] - yearly_filtered.loc[i, "Loan Remaining"]
+        (projected_price_list[i] * (1 - selling_costs_rate))
+        - yearly_filtered.loc[i, "Loan Remaining"]
         for i in range(len(projected_price_list))
     ]
 
@@ -2020,6 +2061,7 @@ if not yearly_cashflow.empty:
             # Returns Analysis
             "Net Profit (€)": profit_list,
             "IRR (%)": irr_list,
+            f"MIRR (%) @{mirr_reinvestment_rate_pct:.1f}%": mirr_list,
             "CAGR (%)": cagr_list,
             "ROI (%)": roi_list,
         }
@@ -2046,6 +2088,7 @@ if not yearly_cashflow.empty:
             # Profit & KPIs
             "Net Profit (€)",
             "IRR (%)",
+            f"MIRR (%) @{mirr_reinvestment_rate_pct:.1f}%",
             "CAGR (%)",
             "ROI (%)",
         ]
@@ -2055,13 +2098,25 @@ if not yearly_cashflow.empty:
     with st.expander("📚 Understanding Investment Metrics", expanded=False):
         st.markdown(
             """
-        ### 🎯 IRR (Internal Rate of Return) - **MOST IMPORTANT**
-        **The gold standard for investment decisions.** IRR represents the annualized rate of return that makes the net present value of all cash flows equal to zero.
+        ### 🎯 MIRR (Modified Internal Rate of Return) - **MOST REALISTIC**
+        **A more realistic version of IRR.** MIRR assumes you reinvest positive cashflows at a realistic rate (3% in this calculator) rather than at the IRR rate itself.
         
-        - **What it means:** If you invested this money at IRR% per year, you'd get the same outcome
-        - **Why it's best:** Accounts for both the timing and size of all cash flows
-        - **How to use:** Compare to alternative investments (stocks typically return 7-10%, bonds 3-5%)
-        - **Example:** An IRR of 8% means you're earning 8% per year on your invested capital
+        - **What it means:** Your actual return assuming conservative reinvestment of intermediate cashflows
+        - **Why it's better than IRR:** IRR assumes you can reinvest tax refunds and rental income at the IRR rate (often 20-45%!), which is unrealistic
+        - **How to use:** This is your true expected return. Compare to stocks (7-10%) or bonds (3-5%)
+        - **Example:** If IRR is 45% but MIRR is 8%, you're really earning 8% when accounting for realistic reinvestment
+        
+        ---
+        
+        ### 🎯 IRR (Internal Rate of Return) - **MATHEMATICALLY PURE BUT UNREALISTIC**
+        **The traditional metric.** IRR is the rate that makes net present value of all cash flows equal to zero.
+        
+        - **What it means:** If you could reinvest ALL positive cashflows at this exact rate, you'd get this return
+        - **The problem:** IRR assumes you can reinvest tax refunds and rent at the IRR rate itself (unrealistic!)
+        - **Why it's often too high:** Tax refunds in early years + high reinvestment assumption = inflated IRR
+        - **Example:** An IRR of 45% assumes you reinvest your €5,000 tax refund at 45% each year (impossible!)
+        
+        **⚠️ Warning:** IRR above 20% is usually unrealistic - use MIRR instead for real-world decisions.
         
         ---
         
@@ -2157,18 +2212,22 @@ if not yearly_cashflow.empty:
                     )
 
                     if j == 0:
+                        equity_outflow = -j_equity
                         operating = j_rent + j_tax - j_interest - j_maint
-                        total_cf = -j_equity + operating
+                        total_cf = equity_outflow + operating
                         sale_proceeds = 0
-                        desc = "Initial equity + Year 0 operating"
+                        desc = "Equity investment + Year 0 operating"
                     elif j == len(irr_cashflows_year_10) - 1:
+                        equity_outflow = -j_equity if j_equity > 0 else 0
                         operating = j_rent + j_tax - j_interest - j_maint
-                        sale_proceeds = j_price - j_loan_remaining
-                        total_cf = operating + sale_proceeds
+                        j_net_sale_price = j_price * (1 - selling_costs_rate)
+                        sale_proceeds = j_net_sale_price - j_loan_remaining
+                        total_cf = equity_outflow + operating + sale_proceeds
                         desc = f"Year {j} operating + sale proceeds"
                     else:
-                        operating = j_rent + j_tax - j_interest - j_maint - j_equity
-                        total_cf = operating
+                        equity_outflow = -j_equity if j_equity > 0 else 0
+                        operating = j_rent + j_tax - j_interest - j_maint
+                        total_cf = equity_outflow + operating
                         sale_proceeds = 0
                         desc = f"Year {j} operating"
 
@@ -2228,26 +2287,33 @@ if not yearly_cashflow.empty:
 
         st.subheader("📍 10-Year Investment Summary (KPIs Ordered by Importance)")
 
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
+        mirr_col_name = f"MIRR (%) @{mirr_reinvestment_rate_pct:.1f}%"
         with col1:
             st.metric(
-                "🥇 IRR (Internal Rate of Return)",
-                f"{year_10_data['IRR (%)']:.2f}%",
-                help="Your annualized return - compare this to stocks (7-10%) or bonds (3-5%). This is the MOST IMPORTANT metric.",
+                "🥇 MIRR (Modified IRR)",
+                f"{year_10_data[mirr_col_name]:.2f}%",
+                help=f"Your REAL return assuming {mirr_reinvestment_rate_pct:.1f}% reinvestment rate. This is the MOST REALISTIC metric - use this for decisions!",
             )
         with col2:
             st.metric(
-                "🥈 CAGR (Compound Annual Growth)",
-                f"{year_10_data['CAGR (%)']:.2f}%",
-                help="Your average yearly return rate. Simpler than IRR but doesn't account for cash flow timing.",
+                "IRR (Traditional)",
+                f"{year_10_data['IRR (%)']:.2f}%",
+                help="Traditional IRR - often inflated because it assumes you can reinvest at this rate. If >20%, treat with skepticism.",
             )
         with col3:
             st.metric(
-                "🥉 ROI (Return on Investment)",
+                "CAGR",
+                f"{year_10_data['CAGR (%)']:.2f}%",
+                help="Average yearly return rate. Simpler than IRR but doesn't account for cash flow timing.",
+            )
+        with col4:
+            st.metric(
+                "ROI",
                 f"{year_10_data['ROI (%)']:.2f}%",
                 help="Total profit as % of investment. Useful but doesn't consider that this took 10 years.",
             )
-        with col4:
+        with col5:
             st.metric(
                 "💶 Net Profit",
                 f"€{year_10_data['Net Profit (€)']:,.0f}",
@@ -2255,7 +2321,7 @@ if not yearly_cashflow.empty:
             )
 
         st.caption(
-            "📊 **Metrics ordered by importance:** IRR > CAGR > ROI. IRR is the best for comparing to alternative investments."
+            "📊 **Use MIRR for decisions:** MIRR accounts for realistic reinvestment. IRR often looks too good to be true (because it is!)."
         )
 
     st.dataframe(
@@ -2273,6 +2339,7 @@ if not yearly_cashflow.empty:
                 "Total Inflow (€)": "€{:,.0f}",
                 "Net Profit (€)": "€{:,.0f}",
                 "IRR (%)": "{:.2f}%",
+                f"MIRR (%) @{mirr_reinvestment_rate_pct:.1f}%": "{:.2f}%",
                 "CAGR (%)": "{:.2f}%",
                 "ROI (%)": "{:.2f}%",
             }
@@ -2280,7 +2347,7 @@ if not yearly_cashflow.empty:
     )
 
     st.caption(
-        "📊 **Table structure:** Sale scenario → Your outflows → Your inflows → Net profit → KPIs (IRR/CAGR/ROI). See 'Understanding Investment Metrics' section above for detailed explanations."
+        "📊 **Focus on MIRR:** This is your realistic return. IRR can be misleading when tax refunds are large."
     )
 else:
     st.write("No yearly cashflow data to calculate returns.")
